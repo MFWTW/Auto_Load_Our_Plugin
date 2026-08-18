@@ -24,35 +24,15 @@ DeepSeek Harness（DSH）**文件夹工作流自动加载器**：让每个工作
 
 ## 安装
 
-### 1. 安装三个组合包（二选一）
-
-**方式 A：正式安装（文档方式）**
+### 1. 安装三个组合包（文档方式）
 
 ```sh
-dsh plugin --profile web add ./dsh-workflow-loader
-dsh plugin --profile web add ./dsh-workflow-registry
-dsh plugin --profile web add ./dsh-workflow-settings
-dsh --profile web --dump-config   # 应看到三个包的层
+dsh plugin --profile web add ./dsh-workflow-loader ./dsh-workflow-registry ./dsh-workflow-settings
+dsh --profile web --dump-config   # 应看到 dsh-workflow-* 三个包的层
 ```
 
-**方式 B：手动放置（免安装）**
-
-1. 把三个目录（`dsh-workflow-loader`、`dsh-workflow-registry`、
-   `dsh-workflow-settings`）复制进 DSH 部署的 `node_modules/`；
-2. 在 profile 的 `cordis.patch.yml` 中追加：
-
-```yaml
-- insert:
-    - id: workflow-registry
-      name: 'dsh-workflow-registry'
-    - id: ui-workflows
-      name: 'dsh-workflow-settings'
-    - id: workflow-loader
-      name: 'dsh-workflow-loader'
-```
-
-> 加载器放在**宿主层**：任何预设（标准/创造/…）的会话，只要工作目录
-> 带 `.dsh/workflows/`，第一次发消息时就会自动加载并上报设置页。
+（`dsh plugin` 转发给 pnpm；如果 PATH 上没有 pnpm，可用 corepack：
+`corepack enable pnpm` 后重试。）
 
 ### 2. 重启 Web UI（同下）
 
@@ -105,6 +85,15 @@ export function apply(ctx) {              // 必需
   })
 }
 ```
+
+## 设置页勾选开关
+
+设置 → 工作流 页里每个工作流带**启用勾选框**：
+
+- 取消勾选 → 立即卸载该工作流的工具（状态变"已禁用"，名单持久化到
+  `$DSH_HOME/storages/workflow-disabled.json`，重启后依然生效）；
+- 重新勾选 → 立即加载；
+- 「全部重新加载」→ 按当前勾选状态重载所有已报告目录。
 
 ## 会话内管理工具
 

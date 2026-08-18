@@ -6,8 +6,8 @@
  * 导入并 apply(ctx)，把目录自带的工作流注册为全局可用工具；
  * 同时把加载报告上报 workflowRegistry，供设置页「工作流」列表显示。
  *
- * 放在宿主层（组合包）意味着：任何预设、任何会话，只要工作目录
- * 里带了工作流文件，就会自动加载。
+ * 支持设置页勾选开关：加载器捕获每个工作流注册的 disposer，
+ * 禁用即时卸载、启用即时加载；禁用名单由注册表持久化。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -17,8 +17,8 @@ import { pathToFileURL } from 'node:url'
 
 export const name = 'workflow-loader'
 
-/** 工具注册与文件读取的硬依赖。 */
-export const inject = ['tools', 'fs']
+/** 工具注册、文件读取与注册表的硬依赖。 */
+export const inject = ['tools', 'fs', 'workflowRegistry']
 
 /** 可调参数一律走 Config（行内 config 可覆盖）。 */
 export const Config = Schema.object({
@@ -28,8 +28,10 @@ export const Config = Schema.object({
   maxReports: Schema.natural().default(20),
 })
 
-/** 已加载的文件路径 → 记录（进程生命周期内不重复加载）。 */
-const loaded = new Map()
+/** 已加载记录：filePath → { workspace, rel, name, description, disposers, status } */
+const records = new Map()
+/** 已扫描过的工作目录。 */
+const workspaces = new Set()
 /** 最近一次自动加载的结果。 */
 let last = null
 /** 已自动扫描过的工作目录（每目录每进程只自动扫一次）。 */
@@ -42,20 +44,86 @@ function findCwd(agent) {
     ?? null
 }
 
+function relParts(rel) {
+  const i = rel.lastIndexOf('/')
+  return i >= 0 ? [rel.slice(0, i), rel.slice(i + 1)] : ['', rel]
+}
+
+/** 给工作流一个捕获 disposer 的子上下文：tools.register 的返回值被记录。 */
+function makeSubCtx(ctx, disposers) {
+  const sub = Object.create(ctx)
+  const tools = ctx.tools
+  sub.tools = Object.create(tools)
+  sub.tools.register = (definition) => {
+    const off = tools.register(definition)
+    if (typeof off === 'function') disposers.push(off)
+    return off
+  }
+  return sub
+}
+
 export function apply(ctx, config) {
+  const registry = ctx.workflowRegistry
   const { scanDirs, maxReports } = config
 
-  function report(workspace, payload) {
+  function report(workspace) {
+    const payload = { workspace, workflows: [] }
+    for (const [filePath, rec] of records) {
+      if (rec.workspace !== workspace) continue
+      payload.workflows.push({ file: rec.rel, name: rec.name, description: rec.description, status: rec.status })
+    }
+    if (payload.workflows.length === 0) payload.empty = true
+    last = payload
+    registry.report(workspace, payload, maxReports)
+    return payload
+  }
+
+  async function loadFile(workspace, rel) {
+    const [dir, name] = relParts(rel)
+    const filePath = join(workspace, rel)
+    const rec = { workspace, rel, name, description: '', disposers: [], status: 'loaded' }
+    if (registry.isDisabled(workspace, rel)) {
+      rec.status = 'disabled'
+      records.set(filePath, rec)
+      return rec
+    }
     try {
-      const registry = ctx.get('workflowRegistry')
-      if (registry && typeof registry.report === 'function') registry.report(workspace, payload, maxReports)
-    } catch {
-      // 注册表未安装时降级为无上报。
+      const mod = await import(pathToFileURL(filePath).href + '?v=' + Date.now())
+      const plugin = mod.default ?? mod
+      if (typeof plugin?.apply !== 'function') {
+        rec.status = 'skip: 未导出 apply 函数'
+        records.set(filePath, rec)
+        return rec
+      }
+      if (Array.isArray(plugin.inject)) {
+        const missing = plugin.inject.filter((n) => ctx.get(n) === undefined)
+        if (missing.length > 0) {
+          rec.status = 'skip: 缺少服务 ' + missing.join(', ')
+          records.set(filePath, rec)
+          return rec
+        }
+      }
+      plugin.apply(makeSubCtx(ctx, rec.disposers))
+      rec.name = typeof plugin.name === 'string' && plugin.name ? plugin.name : name
+      rec.description = typeof plugin.description === 'string' ? plugin.description : ''
+      records.set(filePath, rec)
+      return rec
+    } catch (error) {
+      rec.status = 'error: ' + String(error?.message ?? error)
+      records.set(filePath, rec)
+      return rec
     }
   }
 
+  function dispose(rec) {
+    for (const off of rec.disposers) {
+      try { off() } catch { /* 忽略卸载异常 */ }
+    }
+    rec.disposers = []
+  }
+
   async function loadFrom(workspace, { reload = false } = {}) {
-    const result = { workspace, workflows: [] }
+    workspaces.add(workspace)
     for (const dir of scanDirs) {
       let target
       try {
@@ -66,58 +134,34 @@ export function apply(ctx, config) {
       let entries = []
       try {
         entries = await ctx.fs.listDir(target)
-      } catch (error) {
-        result.workflows.push({ dir, status: 'error: ' + String(error?.message ?? error) })
+      } catch {
         continue
       }
       const files = entries.filter((e) => e.kind === 'file' && e.name.endsWith('.mjs'))
       for (const f of files) {
-        const filePath = join(workspace, dir, f.name)
-        if (!reload && loaded.has(filePath)) {
-          const prev = loaded.get(filePath)
-          result.workflows.push({ file: f.name, name: prev.name, status: 'already-loaded' })
-          continue
-        }
-        try {
-          const mod = await import(pathToFileURL(filePath).href + '?v=' + Date.now())
-          const plugin = mod.default ?? mod
-          if (typeof plugin?.apply !== 'function') {
-            result.workflows.push({ file: f.name, status: 'skip: 未导出 apply 函数' })
-            continue
-          }
-          if (Array.isArray(plugin.inject)) {
-            const missing = plugin.inject.filter((n) => ctx.get(n) === undefined)
-            if (missing.length > 0) {
-              result.workflows.push({ file: f.name, status: 'skip: 缺少服务 ' + missing.join(', ') })
-              continue
-            }
-          }
-          plugin.apply(ctx)
-          const displayName = typeof plugin.name === 'string' && plugin.name ? plugin.name : f.name
-          const description = typeof plugin.description === 'string' ? plugin.description : ''
-          loaded.set(filePath, { name: displayName, description, at: Date.now() })
-          result.workflows.push({ file: f.name, name: displayName, status: 'loaded' })
-        } catch (error) {
-          result.workflows.push({ file: f.name, status: 'error: ' + String(error?.message ?? error) })
-        }
+        const rel = dir + '/' + f.name
+        const filePath = join(workspace, rel)
+        const prev = records.get(filePath)
+        if (prev && !reload && prev.status !== 'disabled') continue
+        if (reload && prev) dispose(prev)
+        await loadFile(workspace, rel)
       }
     }
-    if (result.workflows.length === 0) result.empty = true
-    return result
+    return report(workspace)
   }
 
-  /** 会话开始前的自动扫描：宿主层监听同样能收到会话级事件。 */
   async function scanSession(cwd) {
     if (typeof cwd !== 'string' || !cwd || scanned.has(cwd)) return
     scanned.add(cwd)
     try {
-      last = await loadFrom(cwd)
+      await loadFrom(cwd)
     } catch (error) {
       last = { workspace: cwd, error: String(error?.message ?? error) }
+      registry.report(cwd, last, maxReports)
     }
-    report(cwd, last)
   }
 
+  // 自动加载：会话第一次预步时扫描工作目录（宿主层监听同样收到会话级事件）
   ctx.on('agent/pre-step', async ({ agent }, next) => {
     await scanSession(findCwd(agent))
     return next()
@@ -127,6 +171,32 @@ export function apply(ctx, config) {
   ctx.on('session/created', (session) => {
     const cwd = session?.header?.cwd ?? session?.meta?.cwd
     scanSession(cwd)
+  })
+
+  // 设置页开关钩子：挂到注册表
+  registry.attach({
+    async onToggle(workspace, rel, disabled) {
+      const filePath = join(workspace, rel)
+      const prev = records.get(filePath)
+      if (disabled) {
+        if (prev) {
+          dispose(prev)
+          prev.status = 'disabled'
+          records.set(filePath, prev)
+        } else {
+          records.set(filePath, { workspace, rel, name: relParts(rel)[1], description: '', disposers: [], status: 'disabled' })
+        }
+      } else {
+        if (prev) dispose(prev)
+        await loadFile(workspace, rel)
+      }
+      return report(workspace)
+    },
+    async reloadAll() {
+      const out = []
+      for (const ws of [...workspaces]) out.push(await loadFrom(ws, { reload: true }))
+      return { ok: true, reports: out }
+    },
   })
 
   ctx.tools.register(defineTool({
@@ -150,18 +220,13 @@ export function apply(ctx, config) {
       const action = args?.action ?? 'status'
       if (action === 'status') {
         return {
-          loaded: [...loaded.entries()].map(([file, info]) => ({ file, name: info.name, description: info.description })),
+          loaded: [...records.entries()].map(([filePath, info]) => ({ file: info.rel, name: info.name, description: info.description, status: info.status })),
           last,
         }
       }
       const workspace = args?.dir ?? last?.workspace
       if (!workspace) return { error: '尚未自动加载过任何目录，请先用 dir 指定目录' }
-      const rpt = await loadFrom(workspace, { reload: action === 'reload' || action === 'load' })
-      if (action !== 'status') {
-        last = rpt
-        report(workspace, rpt)
-      }
-      return { report: rpt }
+      return { report: await loadFrom(workspace, { reload: action === 'reload' || action === 'load' }) }
     },
   }))
 }
