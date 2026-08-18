@@ -101,12 +101,22 @@ export function apply(ctx) {
       scanned.add(cwd)
       try {
         last = await loadFrom(cwd)
+        report(cwd, last)
       } catch (error) {
         last = { workspace: cwd, error: String(error?.message ?? error) }
+        report(cwd, last)
       }
     }
     return next()
   })
+
+  // 上报宿主侧注册表（供设置页「工作流」列表读取；服务缺失时静默跳过）
+  function report(workspace, payload) {
+    try {
+      const registry = ctx.get('workflowRegistry')
+      if (registry && typeof registry.report === 'function') registry.report(workspace, payload)
+    } catch {}
+  }
 
   // 手动工具：查看工作流列表 / 重新加载 / 指定目录加载
   ctx.tools.register({
@@ -140,8 +150,8 @@ export function apply(ctx) {
       }
       const workspace = args?.dir ?? last?.workspace
       if (!workspace) return { error: '尚未自动加载过任何目录，请先用 dir 指定目录' }
-      const report = await loadFrom(workspace, { reload: action === 'reload' || action === 'load' })
-      if (action !== 'status') last = report
+      const rpt = await loadFrom(workspace, { reload: action === 'reload' || action === 'load' })
+      if (action !== 'status') { last = rpt; report(workspace, rpt) }
       return { report }
     },
   })
