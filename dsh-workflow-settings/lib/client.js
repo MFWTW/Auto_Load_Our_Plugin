@@ -1,7 +1,8 @@
 /**
  * ui-workflows — 设置中的「工作流」页（客户端）
  * 列出工作流加载器上报的加载报告（来自 /api/workflow-registry），
- * 每个工作流带启用勾选框，勾选即时生效（禁用=卸载，启用=加载）。
+ * 每个工作流带滑动开关（样式与产品控件一致），开关即时生效：
+ * 关闭=卸载，打开=加载。禁用名单由注册表持久化。
  */
 window.__ModuleLoader__.load({
   id: 'dsh-workflow-settings',
@@ -16,30 +17,41 @@ window.__ModuleLoader__.load({
       head: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' },
       btn: {
         fontSize: '12px', cursor: 'pointer', padding: '4px 12px', borderRadius: '6px',
-        border: '1px solid rgba(128,128,128,.4)', background: 'transparent', color: 'inherit',
+        border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', color: 'inherit',
       },
       card: {
-        border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px',
+        border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '8px',
         padding: '10px 12px', marginBottom: '8px',
       },
       row: { display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center' },
-      left: { display: 'flex', gap: '8px', alignItems: 'flex-start', minWidth: 0 },
+      left: { display: 'flex', gap: '10px', alignItems: 'center', minWidth: 0, flex: 1 },
       name: { fontWeight: 600 },
       desc: { opacity: 0.75, fontSize: '12px', marginTop: '2px' },
       file: { opacity: 0.55, fontSize: '11px', marginTop: '2px', wordBreak: 'break-all' },
       badge: { fontSize: '11px', padding: '1px 8px', borderRadius: '10px', flexShrink: 0 },
-      check: { marginTop: '4px', accentColor: '#3b82f6', cursor: 'pointer', flexShrink: 0 },
       empty: { opacity: 0.6, padding: '24px 0', textAlign: 'center' },
+      switch: {
+        position: 'relative', width: 34, height: 20, borderRadius: 10, flexShrink: 0,
+        cursor: 'pointer', display: 'inline-block', border: '1px solid var(--dsw-alias-border-l2)',
+        background: 'var(--dsw-alias-interactive-bg-hover)', transition: 'background .15s ease, border-color .15s ease',
+      },
+      switchOn: {
+        background: 'var(--dsw-alias-state-success-primary)', borderColor: 'transparent',
+      },
+      knob: {
+        position: 'absolute', top: 2, width: 14, height: 14, borderRadius: '50%',
+        background: '#fff', transition: 'left .15s ease',
+      },
     }
     const badgeColor = (status) => status === 'loaded'
-      ? { background: 'rgba(43,124,43,.18)', color: '#2b7c2b' }
+      ? { background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent)', color: 'var(--dsw-alias-state-success-primary)' }
       : status === 'disabled'
-        ? { background: 'rgba(128,128,128,.22)', color: 'inherit' }
+        ? { background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-secondary)' }
         : status.startsWith('error')
-          ? { background: 'rgba(185,28,28,.15)', color: '#b91c1c' }
-          : { background: 'rgba(128,128,128,.18)', color: 'inherit' }
+          ? { background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent)', color: 'var(--dsw-alias-state-error-primary)' }
+          : { background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-secondary)' }
     const statusText = (status) => status === 'loaded' ? '已加载'
-      : status === 'disabled' ? '已禁用'
+      : status === 'disabled' ? '已停用'
       : status === 'already-loaded' ? '已加载过'
       : status.startsWith('error') ? '出错' : status
 
@@ -91,12 +103,16 @@ window.__ModuleLoader__.load({
             ? h('div', { style: s.empty }, '该目录下没有 .dsh/workflows/ 工作流文件')
             : list.map((w, i) => {
                 const enabled = !disabledSet.has(ws.workspace + '::' + w.file)
-                return h('div', { key: i, style: { marginTop: 8, borderTop: '1px dashed rgba(128,128,128,.25)', paddingTop: 8 } },
+                return h('div', { key: i, style: { marginTop: 8, borderTop: '1px dashed var(--dsw-alias-border-l2)', paddingTop: 8 } },
                   h('div', { style: s.left },
-                    h('input', {
-                      type: 'checkbox', style: s.check, checked: enabled,
-                      onChange: (ev) => toggle(ws.workspace, w.file, ev.target.checked),
-                    }),
+                    h('button', {
+                      type: 'button', role: 'switch', 'aria-checked': enabled,
+                      'aria-label': (w.name || w.file) + (enabled ? ' 已启用' : ' 已停用'),
+                      style: { ...s.switch, ...(enabled ? s.switchOn : null) },
+                      onClick: () => toggle(ws.workspace, w.file, !enabled),
+                    },
+                      h('span', { style: { ...s.knob, left: enabled ? 16 : 2 } }),
+                    ),
                     h('div', { style: { minWidth: 0 } },
                       h('div', { style: s.row },
                         h('span', { style: s.name }, w.name || w.file),
@@ -115,7 +131,7 @@ window.__ModuleLoader__.load({
         h('div', { style: s.head },
           h('div', null,
             h('div', { style: s.title }, '工作流'),
-            h('div', { style: s.sub }, '勾选启用/禁用各文件夹 .dsh/workflows/ 中的工作流，立即生效'),
+            h('div', { style: s.sub }, '滑动开关控制各文件夹 .dsh/workflows/ 中的工作流，即时生效'),
           ),
           h('div', { style: { display: 'flex', gap: 8 } },
             h('button', { style: s.btn, onClick: reloadAll }, '全部重新加载'),

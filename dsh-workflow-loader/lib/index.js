@@ -134,10 +134,12 @@ export function apply(ctx, config) {
       let entries = []
       try {
         entries = await ctx.fs.listDir(target)
-      } catch {
+      } catch (error) {
+        result.workflows.push({ dir, status: 'error: ' + String(error?.message ?? error) })
         continue
       }
-      const files = entries.filter((e) => e.kind === 'file' && e.name.endsWith('.mjs'))
+      // FsDirEntry 的条目类型字段是 type（'file' | 'directory' | ...）
+      const files = entries.filter((e) => e.type === 'file' && e.name.endsWith('.mjs'))
       for (const f of files) {
         const rel = dir + '/' + f.name
         const filePath = join(workspace, rel)
@@ -209,8 +211,8 @@ export function apply(ctx, config) {
       'action="load" 并给出 dir 参数可加载任意目录下的 .dsh/workflows/*.mjs。',
     ].join('\n'),
     parameters: {
-      action: { type: 'string', required: false, description: 'status | reload | load' },
-      dir: { type: 'string', required: false, description: 'load 时要加载的目录（可选，默认最近工作目录）' },
+      action: { type: 'string', description: 'status | reload | load' },
+      dir: { type: 'string', description: 'load 时要加载的目录（可选，默认最近工作目录）' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
