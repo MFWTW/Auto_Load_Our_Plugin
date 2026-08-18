@@ -8,7 +8,7 @@ DeepSeek Harness（DSH）**文件夹工作流自动加载器**：让每个工作
 
 | 路径 | 形态 | 作用 |
 | --- | --- | --- |
-| `workflow-loader.mjs` | 预设插件文件 | 工作流自动加载器（会话级，装进 Agent 预设） |
+| `dsh-workflow-loader/` | 组合包（bundle） | 工作流自动加载器（宿主侧：任何预设的会话打开文件夹即自动加载） |
 | `workflows/mcm-workflow.mjs` | 工作流文件 | 示例：数学建模六阶段流程工具 `mcm_stage_guide` |
 | `dsh-workflow-registry/` | 组合包（bundle） | 宿主侧工作流注册表 + `/api/workflow-registry` 路由 |
 | `dsh-workflow-settings/` | 组合包（bundle + client） | 设置页「工作流」列表（客户端） |
@@ -24,26 +24,37 @@ DeepSeek Harness（DSH）**文件夹工作流自动加载器**：让每个工作
 
 ## 安装
 
-### 1. 工作流加载器（预设侧）
+### 1. 安装三个组合包（二选一）
 
-把 `workflow-loader.mjs` 复制进智能体预设目录（用户预设默认在
-`${DSH_HOME:-$HOME}/.dsh/.agent-presets/<预设id>/`），并在 `agent.cordis.yml`
-末尾追加：
+**方式 A：正式安装（文档方式）**
 
-```yaml
-- id: workflow-loader
-  name: ./workflow-loader.mjs
-  # 可覆盖的配置（与 Schema 默认值一致）：
-  # config:
-  #   scanDirs: ['.dsh/workflows', '.dsh/plugins']
-  #   maxReports: 20
+```sh
+dsh plugin --profile web add ./dsh-workflow-loader
+dsh plugin --profile web add ./dsh-workflow-registry
+dsh plugin --profile web add ./dsh-workflow-settings
+dsh --profile web --dump-config   # 应看到三个包的层
 ```
 
-> 注：预设目录下的本地插件按 Node 规则解析导入，无法 import 部署内的
-> `@deepseek-ai` 包（defineTool / Schemastery），所以此文件保持零依赖，
-> 配置用手写默认值 + 类型检查；需要 import 部署包的形态用下面的组合包。
+**方式 B：手动放置（免安装）**
 
-### 2. 注册表 + 设置页（组合包，二选一）
+1. 把三个目录（`dsh-workflow-loader`、`dsh-workflow-registry`、
+   `dsh-workflow-settings`）复制进 DSH 部署的 `node_modules/`；
+2. 在 profile 的 `cordis.patch.yml` 中追加：
+
+```yaml
+- insert:
+    - id: workflow-registry
+      name: 'dsh-workflow-registry'
+    - id: ui-workflows
+      name: 'dsh-workflow-settings'
+    - id: workflow-loader
+      name: 'dsh-workflow-loader'
+```
+
+> 加载器放在**宿主层**：任何预设（标准/创造/…）的会话，只要工作目录
+> 带 `.dsh/workflows/`，第一次发消息时就会自动加载并上报设置页。
+
+### 2. 重启 Web UI（同下）
 
 **方式 A：正式安装（文档方式）**
 
@@ -71,7 +82,7 @@ dsh --profile web --dump-config   # 应看到两个包的层
 
 重启 DSH Web 进程（例如 `npm exec @deepseek-ai/dsh web`）后：
 - 设置面板中出现「工作流」页，显示各工作目录的自动加载报告；
-- 新建会话时选装了加载器的预设，打开含 `.dsh/workflows/` 的文件夹即可自动加载。
+- 用**任意预设**新建会话，打开含 `.dsh/workflows/` 的文件夹，发一条消息即可自动加载。
 
 ## 工作流文件约定
 

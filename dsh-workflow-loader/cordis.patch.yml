@@ -1,0 +1,4 @@
+# dsh-workflow-loader 组合包：宿主侧文件夹工作流自动加载器。
+- insert:
+    - id: workflow-loader
+      name: 'dsh-workflow-loader'
