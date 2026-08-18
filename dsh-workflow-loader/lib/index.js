@@ -18,7 +18,7 @@ import { pathToFileURL } from 'node:url'
 export const name = 'workflow-loader'
 
 /** 工具注册、文件读取与注册表的硬依赖。 */
-export const inject = ['tools', 'fs', 'workflowRegistry']
+export const inject = ['tools', 'fs', 'workflowRegistry', 'commands']
 
 /** 可调参数一律走 Config（行内 config 可覆盖）。 */
 export const Config = Schema.object({
@@ -203,6 +203,33 @@ export function apply(ctx, config) {
       const out = []
       for (const ws of [...workspaces]) out.push(await loadFrom(ws, { reload: true }))
       return { ok: true, reports: out }
+    },
+  })
+
+  // 斜杠命令：输入框输入 / 弹出命令菜单，选择 mathmodel（数学建模）后跟文件路径即可
+  ctx.commands.register({
+    name: 'mathmodel',
+    description: '数学建模：按六阶段流程求解指定文件（审题→数据分析→选方法→建模求解→写作→自检打磨）',
+    input: { hint: '[<文件路径>]' },
+    handler: async (invocation) => {
+      const file = String(invocation.rawInput ?? '').trim()
+      const cwd = invocation.agent?.session?.header?.cwd ?? ''
+      const target = file.length > 0 ? file : cwd
+      // 先确保当前工作目录的工作流已加载
+      if (typeof cwd === 'string' && cwd) {
+        try {
+          await loadFrom(cwd)
+        } catch { /* 扫描失败不阻塞命令 */ }
+      }
+      return {
+        kind: 'success',
+        text: [
+          '数学建模工作流已启动：' + target,
+          '流程：审题 → 数据分析 → 选方法 → 建模求解 → 写作 → 自检打磨',
+          '每个阶段开始前调用 mcm_stage_guide 工具获取检查清单与产出要求；',
+          '用 workflows 工具可查看工作流加载状态。',
+        ].join('\n'),
+      }
     },
   })
 
