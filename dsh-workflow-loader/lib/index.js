@@ -17,7 +17,7 @@ import { pathToFileURL } from 'node:url'
 
 export const name = 'workflow-loader'
 
-/** 工具注册、文件读取与注册表的硬依赖。 */
+/** 工具注册、文件读取、注册表与斜杠命令的硬依赖。 */
 export const inject = ['tools', 'fs', 'workflowRegistry', 'commands']
 
 /** 可调参数一律走 Config（行内 config 可覆盖）。 */
@@ -51,14 +51,25 @@ function relParts(rel) {
 
 /** 给工作流一个捕获 disposer 的子上下文：tools.register 的返回值被记录。 */
 function makeSubCtx(ctx, disposers) {
-  const sub = Object.create(ctx)
   const tools = ctx.tools
-  sub.tools = Object.create(tools)
-  sub.tools.register = (definition) => {
-    const off = tools.register(definition)
-    if (typeof off === 'function') disposers.push(off)
-    return off
+  const wrapped = {
+    register(definition) {
+      const off = tools.register(definition)
+      if (typeof off === 'function') disposers.push(off)
+      return off
+    },
   }
+  const sub = Object.create(ctx)
+  // cordis 的 Context 是 Proxy：直接 `sub.tools = ...` 会沿原型链触发其 set 陷阱
+  // （等价于 ctx.reflect.set('tools', ...)），因 tools 由其它 fiber 提供而抛
+  // "cannot set property \"tools\" in multiple fibers"。defineProperty 只创建自有
+  // 属性、不经过原型链，安全地遮蔽代理陷阱。
+  Object.defineProperty(sub, 'tools', {
+    value: wrapped,
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  })
   return sub
 }
 
@@ -66,8 +77,9 @@ export function apply(ctx, config) {
   const registry = ctx.workflowRegistry
   const { scanDirs, maxReports } = config
 
-  function report(workspace) {
+  function report(workspace, dirErrors = []) {
     const payload = { workspace, workflows: [] }
+    if (dirErrors.length > 0) payload.dirErrors = dirErrors
     for (const [filePath, rec] of records) {
       if (rec.workspace !== workspace) continue
       payload.workflows.push({ file: rec.rel, name: rec.name, description: rec.description, status: rec.status })
@@ -103,7 +115,7 @@ export function apply(ctx, config) {
           return rec
         }
       }
-      plugin.apply(makeSubCtx(ctx, rec.disposers))
+      await plugin.apply(makeSubCtx(ctx, rec.disposers))
       rec.name = typeof plugin.name === 'string' && plugin.name ? plugin.name : name
       rec.description = typeof plugin.description === 'string' ? plugin.description : ''
       records.set(filePath, rec)
@@ -124,10 +136,16 @@ export function apply(ctx, config) {
 
   async function loadFrom(workspace, { reload = false } = {}) {
     workspaces.add(workspace)
+    const dirErrors = []
     for (const dir of scanDirs) {
       let target
       try {
         target = await ctx.fs.resolve(join(workspace, dir))
+        // 目录不存在（如旧版 .dsh/plugins）直接跳过，不算错误
+        if (typeof ctx.fs.stat === 'function') {
+          const info = await ctx.fs.stat(target)
+          if (!info || info.type !== 'directory') continue
+        }
       } catch {
         continue
       }
@@ -135,7 +153,7 @@ export function apply(ctx, config) {
       try {
         entries = await ctx.fs.listDir(target)
       } catch (error) {
-        result.workflows.push({ dir, status: 'error: ' + String(error?.message ?? error) })
+        dirErrors.push({ dir, status: 'error: ' + String(error?.message ?? error) })
         continue
       }
       // FsDirEntry 的条目类型字段是 type（'file' | 'directory' | ...）
@@ -149,7 +167,7 @@ export function apply(ctx, config) {
         await loadFile(workspace, rel)
       }
     }
-    return report(workspace)
+    return report(workspace, dirErrors)
   }
 
   async function scanSession(cwd) {
@@ -206,33 +224,6 @@ export function apply(ctx, config) {
     },
   })
 
-  // 斜杠命令：输入框输入 / 弹出命令菜单，选择 mathmodel（数学建模）后跟文件路径即可
-  ctx.commands.register({
-    name: 'mathmodel',
-    description: '数学建模：按六阶段流程求解指定文件（审题→数据分析→选方法→建模求解→写作→自检打磨）',
-    input: { hint: '[<文件路径>]' },
-    handler: async (invocation) => {
-      const file = String(invocation.rawInput ?? '').trim()
-      const cwd = invocation.agent?.session?.header?.cwd ?? ''
-      const target = file.length > 0 ? file : cwd
-      // 先确保当前工作目录的工作流已加载
-      if (typeof cwd === 'string' && cwd) {
-        try {
-          await loadFrom(cwd)
-        } catch { /* 扫描失败不阻塞命令 */ }
-      }
-      return {
-        kind: 'success',
-        text: [
-          '数学建模工作流已启动：' + target,
-          '流程：审题 → 数据分析 → 选方法 → 建模求解 → 写作 → 自检打磨',
-          '每个阶段开始前调用 mcm_stage_guide 工具获取检查清单与产出要求；',
-          '用 workflows 工具可查看工作流加载状态。',
-        ].join('\n'),
-      }
-    },
-  })
-
   ctx.tools.register(defineTool({
     name: 'workflows',
     description: [
@@ -263,4 +254,31 @@ export function apply(ctx, config) {
       return { report: await loadFrom(workspace, { reload: action === 'reload' || action === 'load' }) }
     },
   }))
+
+  // 斜杠命令：输入框输入 / 弹出命令菜单，选择 mathmodel（数学建模）后跟文件路径即可
+  ctx.commands.register({
+    name: 'mathmodel',
+    description: '数学建模：按六阶段流程求解指定文件（审题→数据分析→选方法→建模求解→写作→自检打磨）',
+    input: { hint: '[<文件路径>]' },
+    handler: async (invocation) => {
+      const file = String(invocation.rawInput ?? '').trim()
+      const cwd = invocation.agent?.session?.header?.cwd ?? ''
+      const target = file.length > 0 ? file : cwd
+      // 先确保当前工作目录的工作流已加载
+      if (typeof cwd === 'string' && cwd) {
+        try {
+          await loadFrom(cwd)
+        } catch { /* 扫描失败不阻塞命令 */ }
+      }
+      return {
+        kind: 'success',
+        text: [
+          '数学建模工作流已启动：' + target,
+          '流程：审题 → 数据分析 → 选方法 → 建模求解 → 写作 → 自检打磨',
+          '每个阶段开始前调用 mcm_stage_guide 工具获取检查清单与产出要求；',
+          '用 workflows 工具可查看工作流加载状态。',
+        ].join('\n'),
+      }
+    },
+  })
 }
