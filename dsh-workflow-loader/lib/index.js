@@ -177,6 +177,11 @@ export function apply(ctx, config) {
 
   // 设置页开关钩子：挂到注册表
   registry.attach({
+    /** 设置页打开时按需扫描一个工作目录（幂等：已加载的不重复 import）。 */
+    async scan(workspace) {
+      if (typeof workspace !== 'string' || !workspace) return { error: 'workspace 缺失' }
+      return { report: await loadFrom(workspace) }
+    },
     async onToggle(workspace, rel, disabled) {
       const filePath = join(workspace, rel)
       const prev = records.get(filePath)

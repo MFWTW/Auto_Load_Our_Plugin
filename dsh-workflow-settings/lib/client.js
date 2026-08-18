@@ -63,10 +63,26 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function WorkflowsPage() {
+    function WorkflowsPage(props) {
       const [data, setData] = useState(null)
       const [error, setError] = useState('')
       const [tick, setTick] = useState(0)
+
+      // 打开设置页即按需扫描所有工作区（useWorkspaces 为设置页标准 prop）
+      const useWorkspaces = props && typeof props.useWorkspaces === 'function'
+        ? props.useWorkspaces
+        : () => ({ items: [], phase: 'ready' })
+      const wsSnapshot = useWorkspaces((s) => s)
+      const scannedOnOpen = useState(false)
+      const [didScan, setDidScan] = scannedOnOpen
+      useEffect(() => {
+        if (didScan || wsSnapshot.phase !== 'ready') return
+        setDidScan(true)
+        const items = Array.isArray(wsSnapshot.items) ? wsSnapshot.items : []
+        const paths = items.map((w) => w && w.path).filter((x) => typeof x === 'string' && x)
+        Promise.all(paths.map((workspace) => post('scan', { workspace }).catch(() => null)))
+          .then(() => setTick((t) => t + 1))
+      }, [wsSnapshot.phase, wsSnapshot.items, didScan])
 
       useEffect(() => {
         let alive = true
@@ -150,7 +166,7 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         ctx.slots.inject('settings.section', () => ctx.slots.register(
           { name: 'settings.section', id: 'workflows', order: 5, label: '工作流' },
-          () => h(WorkflowsPage),
+          (props) => h(WorkflowsPage, props),
         ))
       },
     }

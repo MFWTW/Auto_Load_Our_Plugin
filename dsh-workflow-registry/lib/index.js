@@ -91,6 +91,12 @@ export default class WorkflowRegistry extends Service {
       }
       return { ok: true, disabled: [...this.disabled] }
     }
+    if (payload.action === 'scan') {
+      const { workspace } = payload
+      if (typeof workspace !== 'string' || !workspace) return { error: 'scan 需要 workspace' }
+      if (this.loader && typeof this.loader.scan === 'function') return await this.loader.scan(workspace)
+      return { ok: true, note: 'loader 未就绪' }
+    }
     if (payload.action === 'reload') {
       if (this.loader && typeof this.loader.reloadAll === 'function') return await this.loader.reloadAll()
       return { ok: true, note: 'loader 未就绪' }
