@@ -1,0 +1,4 @@
+# dsh-workflow-registry 组合包：向组合中插入宿主侧工作流注册表行。
+- insert:
+    - id: workflow-registry
+      name: 'dsh-workflow-registry'

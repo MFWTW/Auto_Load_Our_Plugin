@@ -1,0 +1,4 @@
+# dsh-workflow-settings 组合包：向组合中插入设置页「工作流」客户端行。
+- insert:
+    - id: ui-workflows
+      name: 'dsh-workflow-settings'

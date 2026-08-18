@@ -1,9 +1,0 @@
-{
-  "name": "@deepseek-ai/dsh-host-workflow-registry",
-  "version": "0.1.0",
-  "type": "module",
-  "exports": {
-    ".": { "default": "./lib/index.js" },
-    "./package.json": "./package.json"
-  }
-}

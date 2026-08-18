@@ -3,7 +3,7 @@
  * 列出工作流加载器上报的加载报告（来自 /api/workflow-registry）。
  */
 window.__ModuleLoader__.load({
-  id: '@deepseek-ai/dsh-client-ui-workflows',
+  id: 'dsh-workflow-settings',
   factory: (require) => {
     const react = require('react')
     const { createElement: h, useState, useEffect } = react

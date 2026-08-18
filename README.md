@@ -1,15 +1,17 @@
 # dsh-workflow-loader
 
-DeepSeek Harness (DSH) **文件夹工作流自动加载器**：让每个工作文件夹自带的 `.dsh/workflows/*.mjs` 在会话开始时自动加载，把文件夹变成"自带工作流"的工作区。配套提供**设置中的「工作流」列表页**。
+DeepSeek Harness（DSH）**文件夹工作流自动加载器**：让每个工作文件夹自带的 `.dsh/workflows/*.mjs` 在会话开始时自动加载，把文件夹变成"自带工作流"的工作区。配套提供**设置中的「工作流」列表页**。
 
-## 内容
+插件按官方开发文档格式编写（见 [第一个插件](https://deepseek-harness.github.io/deepseek-harness/develop/basic/)、[开发一个 Tool](https://deepseek-harness.github.io/deepseek-harness/develop/basic/tool)、[插件配置](https://deepseek-harness.github.io/deepseek-harness/develop/basic/config)、[打包与安装插件](https://deepseek-harness.github.io/deepseek-harness/develop/basic/publish)）。
 
-| 文件 | 作用 |
-| --- | --- |
-| `workflow-loader.mjs` | 工作流自动加载器（装入智能体预设，一次性配置） |
-| `workflows/mcm-workflow.mjs` | 示例工作流：数学建模六阶段流程工具 `mcm_stage_guide` |
-| `settings-page/host-workflow-registry/` | 宿主侧工作流注册表包（上报存储 + `/api/workflow-registry` 路由） |
-| `settings-page/client-ui-workflows/` | 客户端「设置 → 工作流」页面包 |
+## 仓库内容
+
+| 路径 | 形态 | 作用 |
+| --- | --- | --- |
+| `workflow-loader.mjs` | 预设插件文件 | 工作流自动加载器（会话级，装进 Agent 预设） |
+| `workflows/mcm-workflow.mjs` | 工作流文件 | 示例：数学建模六阶段流程工具 `mcm_stage_guide` |
+| `dsh-workflow-registry/` | 组合包（bundle） | 宿主侧工作流注册表 + `/api/workflow-registry` 路由 |
+| `dsh-workflow-settings/` | 组合包（bundle + client） | 设置页「工作流」列表（客户端） |
 
 ## 工作原理
 
@@ -17,38 +19,59 @@ DeepSeek Harness (DSH) **文件夹工作流自动加载器**：让每个工作�
 打开工作文件夹 → 新建会话（使用安装了加载器的预设）
     → 会话第一次模型请求前，加载器扫描 <工作目录>/.dsh/workflows/*.mjs
     → 逐个 import 并 apply(ctx)，工作流注册的工具立刻可用
-    → 加载报告同时上报宿主注册表 → 设置页「工作流」可见
+    → 加载报告上报宿主注册表 → 设置页「工作流」可见
 ```
 
 ## 安装
 
-### 1. 预设侧（工作流加载器）
+### 1. 工作流加载器（预设侧）
 
-打开智能体预设目录（用户预设默认在 `${DSH_HOME:-$HOME}/.dsh/.agent-presets/<预设id>/`）：
+把 `workflow-loader.mjs` 复制进智能体预设目录（用户预设默认在
+`${DSH_HOME:-$HOME}/.dsh/.agent-presets/<预设id>/`），并在 `agent.cordis.yml`
+末尾追加：
 
-- 把 `workflow-loader.mjs` 复制进该目录；
-- 在 `agent.cordis.yml` 末尾追加：
-  ```yaml
-  - id: workflow-loader
-    name: ./workflow-loader.mjs
-  ```
-- 修改 `preset.yml` 的 `name` / `description`。
+```yaml
+- id: workflow-loader
+  name: ./workflow-loader.mjs
+  # 可覆盖的配置（与 Schema 默认值一致）：
+  # config:
+  #   scanDirs: ['.dsh/workflows', '.dsh/plugins']
+  #   maxReports: 20
+```
 
-### 2. 宿主侧（设置页「工作流」列表，可选）
+> 注：预设目录下的本地插件按 Node 规则解析导入，无法 import 部署内的
+> `@deepseek-ai` 包（defineTool / Schemastery），所以此文件保持零依赖，
+> 配置用手写默认值 + 类型检查；需要 import 部署包的形态用下面的组合包。
 
-1. 把 `settings-page/host-workflow-registry` 与 `settings-page/client-ui-workflows`
-   两个目录复制到 DSH 部署的 `node_modules/@deepseek-ai/` 下，
-   目录名分别为 `dsh-host-workflow-registry` 与 `dsh-client-ui-workflows`。
-2. 在所用 profile 的 `cordis.patch.yml` 里追加：
-   ```yaml
-   - insert:
-       - id: workflow-registry
-         name: '@deepseek-ai/dsh-host-workflow-registry'
-       - id: ui-workflows
-         name: '@deepseek-ai/dsh-client-ui-workflows'
-   ```
-3. 重启 DSH Web 进程。设置面板中即出现「工作流」页，
-   显示各工作目录的自动加载报告（工作流名称、说明、状态、时间）。
+### 2. 注册表 + 设置页（组合包，二选一）
+
+**方式 A：正式安装（文档方式）**
+
+```sh
+dsh plugin --profile web add ./dsh-workflow-registry
+dsh plugin --profile web add ./dsh-workflow-settings
+dsh --profile web --dump-config   # 应看到两个包的层
+```
+
+**方式 B：手动放置（免安装）**
+
+1. 把 `dsh-workflow-registry`、`dsh-workflow-settings` 两个目录复制进
+   DSH 部署的 `node_modules/`（与 `@deepseek-ai` 平级）；
+2. 在 profile 的 `cordis.patch.yml` 中追加：
+
+```yaml
+- insert:
+    - id: workflow-registry
+      name: 'dsh-workflow-registry'
+    - id: ui-workflows
+      name: 'dsh-workflow-settings'
+```
+
+### 3. 重启 Web UI
+
+重启 DSH Web 进程（例如 `npm exec @deepseek-ai/dsh web`）后：
+- 设置面板中出现「工作流」页，显示各工作目录的自动加载报告；
+- 新建会话时选装了加载器的预设，打开含 `.dsh/workflows/` 的文件夹即可自动加载。
 
 ## 工作流文件约定
 
