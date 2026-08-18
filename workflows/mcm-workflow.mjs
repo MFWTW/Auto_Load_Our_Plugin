@@ -1,7 +1,7 @@
 /**
- * mcm-workflow — 数学建模六阶段流程插件（文件夹插件版）
+ * mcm-workflow — 数学建模六阶段流程工作流（文件夹工作流文件）
  *
- * 放在任意工作目录的 `.dsh/plugins/` 下，由 folder-plugins 加载器
+ * 放在任意工作目录的 `.dsh/workflows/` 下，由工作流加载器
  * 在会话开始时自动发现并加载。注册模型工具 `mcm_stage_guide`：
  *   - stage=0（默认）：总览（五大原则、六阶段、参考资料策略）
  *   - stage=1~6：该阶段检查清单 + 产出要求
@@ -9,7 +9,8 @@
  * 流程：审题 → 数据分析 → 选方法 → 建模求解 → 写作 → 自检打磨
  */
 
-export const name = 'mcm-workflow'
+export const name = '数学建模六阶段流程'
+export const description = '审题→数据分析→选方法→建模求解→写作→自检打磨；提供 mcm_stage_guide 工具按阶段指引。'
 
 /** 工具注册需要 tools 服务；加载器会先确认服务存在再调用 apply。 */
 export const inject = ['tools']
