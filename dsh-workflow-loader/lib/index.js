@@ -49,6 +49,34 @@ function relParts(rel) {
   return i >= 0 ? [rel.slice(0, i), rel.slice(i + 1)] : ['', rel]
 }
 
+/** 数学建模六阶段路线（供 /mathmodel 启动时立即写入面板，避免「准备中」空转）。 */
+const MCM_STAGES = [
+  { id: 1, title: '审题', output: '问题清单（每问一句话概括本质 + 难点）' },
+  { id: 2, title: '数据分析', output: '数据体检报告 + 预处理方案' },
+  { id: 3, title: '选用数学方法', output: '方法清单（每问对应方法 + 选用理由 + 可行性验证）' },
+  { id: 4, title: '建模与求解', output: '每问的模型 + 结果 + 检验 + 可作图数据' },
+  { id: 5, title: '写作（DOCX → PDF，图表/流程图齐全）', output: '论文初稿：DOCX（含框图/流程图/数据图/结果表格/检验图表）+ PDF' },
+  { id: 6, title: '自检打磨', output: '终稿：DOCX + PDF（评委视角过关）' },
+]
+
+/** 生成六阶段路线图（状态规则与 mcm-workflow.mjs 的 roadmap 保持一致）。 */
+function mcmRoadmap(current = 0, allDone = false) {
+  return MCM_STAGES.map((s) => ({
+    id: s.id,
+    title: s.title,
+    output: s.output,
+    status: allDone
+      ? 'done'
+      : current <= 0
+        ? 'pending'
+        : s.id < current
+          ? 'done'
+          : s.id === current
+            ? 'active'
+            : 'pending',
+  }))
+}
+
 /** 给工作流一个捕获 disposer 的子上下文：tools.register 的返回值被记录。 */
 function makeSubCtx(ctx, disposers, registry, workspace) {
   const tools = ctx.tools
@@ -320,7 +348,9 @@ export function apply(ctx, config) {
     description: '数学建模：按六阶段流程求解指定文件（审题→数据分析→选方法→建模求解→写作→自检打磨）',
     input: { hint: '[<文件路径>]' },
     handler: async (invocation) => {
-      const file = String(invocation.rawInput ?? '').trim()
+      const raw = String(invocation.rawInput ?? '').trim()
+      // 去掉用户手输的字面引号（如 /mathmodel "C:\...\2025赛题C"）
+      const file = raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1).trim() : raw
       const cwd = invocation.agent?.session?.header?.cwd ?? ''
       const target = file.length > 0 ? file : cwd
       // 先确保当前工作目录的工作流已加载
@@ -331,13 +361,21 @@ export function apply(ctx, config) {
       }
       // 建一条运行记录：右侧面板立即显示「运行中」
       const run = registry.startRun({ workspace: cwd, name: '数学建模六阶段流程', target })
+      // 立即写入六阶段路线图并把当前阶段置为 1，避免面板停留在「准备中」空转
+      registry.reportRun(cwd, {
+        stage: 1,
+        status: 'running',
+        stages: mcmRoadmap(1),
+        message: '阶段 1「审题」进行中 → 产出：问题清单（每问一句话概括本质 + 难点）',
+      })
       return {
         kind: 'success',
         text: [
           '数学建模工作流已启动：' + target,
-          '流程：审题 → 数据分析 → 选方法 → 建模求解 → 写作 → 自检打磨',
-          '每个阶段开始前调用 mcm_stage_guide 工具获取检查清单与产出要求；',
-          '右侧「工作流运行」面板可查看进度；完成后调用 workflow_run complete 记录结果。',
+          '流程：审题 → 数据分析 → 选方法 → 建模求解 → 写作（DOCX→PDF）→ 自检打磨',
+          '请立即调用 mcm_stage_guide(stage=1) 进入第一阶段「审题」并开始执行；',
+          '之后每完成一个阶段、进入下一阶段前，先调用对应 stage 的 mcm_stage_guide 获取该阶段检查清单与产出要求；',
+          '右侧「工作流运行」面板可查看进度；全部完成后调用 workflow_run complete 记录结果。',
           '运行 ID：' + run.id,
         ].join('\n'),
       }

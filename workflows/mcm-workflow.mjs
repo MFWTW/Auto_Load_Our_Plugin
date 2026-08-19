@@ -205,7 +205,9 @@ export function apply(ctx) {
         title: stage.title,
         checks: stage.checks,
         output: stage.output,
-        paperRefs: stage.paperRefs,
+        // paperRefs 仅阶段 5 存在；其余阶段含 undefined 值会触发
+        // "value is not lossless JSON" 校验错误，须按存在性展开
+        ...(stage.paperRefs ? { paperRefs: stage.paperRefs } : {}),
         principles,
       }
     },
