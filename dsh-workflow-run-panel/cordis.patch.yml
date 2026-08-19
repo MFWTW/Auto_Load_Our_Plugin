@@ -1,4 +1,0 @@
-# dsh-workflow-run-panel 组合包：右侧「工作流运行」面板 + 完成弹窗（客户端）。
-- insert:
-    - id: workflow-run-panel
-      name: 'dsh-workflow-run-panel'

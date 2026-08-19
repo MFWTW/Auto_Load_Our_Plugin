@@ -1,17 +1,17 @@
 # dsh-workflow-loader
 
-DeepSeek Harness（DSH）**文件夹工作流自动加载器**：让每个工作文件夹自带的 `.dsh/workflows/*.mjs` 在会话开始时自动加载，把文件夹变成"自带工作流"的工作区。配套提供**设置中的「工作流」列表页**。
+DeepSeek Harness（DSH）**文件夹工作流自动加载器**：让每个工作文件夹自带的 `.dsh/workflows/*.mjs` 在会话开始时自动加载，把文件夹变成"自带工作流"的工作区。
 
-插件按官方开发文档格式编写（见 [第一个插件](https://deepseek-harness.github.io/deepseek-harness/develop/basic/)、[开发一个 Tool](https://deepseek-harness.github.io/deepseek-harness/develop/basic/tool)、[插件配置](https://deepseek-harness.github.io/deepseek-harness/develop/basic/config)、[打包与安装插件](https://deepseek-harness.github.io/deepseek-harness/develop/basic/publish)）。
+客户端 UI（设置页「工作流」、右侧「工作流运行」面板）已拆分到
+[MFWTW/dsh-UI-web](https://github.com/MFWTW/dsh-UI-web)。
 
 ## 仓库内容
 
 | 路径 | 形态 | 作用 |
 | --- | --- | --- |
-| `dsh-workflow-loader/` | 组合包（bundle） | 工作流自动加载器（宿主侧：任何预设的会话打开文件夹即自动加载） |
-| `workflows/mcm-workflow.mjs` | 工作流文件 | 示例：数学建模六阶段流程工具 `mcm_stage_guide` |
-| `dsh-workflow-registry/` | 组合包（bundle） | 宿主侧工作流注册表 + `/api/workflow-registry` 路由 |
-| `dsh-workflow-settings/` | 组合包（bundle + client） | 设置页「工作流」列表（客户端） |
+| `dsh-workflow-loader/` | 组合包 | 工作流自动加载器：扫描 `.dsh/workflows/*.mjs` 并 apply；`/mathmodel` 命令；`workflows`/`workflow_run` 工具；向工作流文件注入运行上报桥 |
+| `dsh-workflow-registry/` | 组合包（Service） | 加载报告 + 启用/禁用名单 + 工作流运行记录（runs）；`/api/workflow-registry` 与 `/api/workflow-runs` 路由 |
+| `workflows/mcm-workflow.mjs` | 工作流文件 | 示例：数学建模六阶段流程工具 `mcm_stage_guide`（自动上报阶段进度） |
 
 ## 工作原理
 
@@ -24,115 +24,59 @@ DeepSeek Harness（DSH）**文件夹工作流自动加载器**：让每个工作
 
 ## 安装
 
-### 1. 安装三个组合包（文档方式）
+### 1. 安装两个宿主侧包
 
 ```sh
-dsh plugin --profile web add ./dsh-workflow-loader ./dsh-workflow-registry ./dsh-workflow-settings
-dsh --profile web --dump-config   # 应看到 dsh-workflow-* 三个包的层
-```
-
-（`dsh plugin` 转发给 pnpm；如果 PATH 上没有 pnpm，可用 corepack：
-`corepack enable pnpm` 后重试。）
-
-### 2. 重启 Web UI（同下）
-
-**方式 A：正式安装（文档方式）**
-
-```sh
-dsh plugin --profile web add ./dsh-workflow-registry
-dsh plugin --profile web add ./dsh-workflow-settings
+dsh plugin --profile web add ./dsh-workflow-loader ./dsh-workflow-registry
 dsh --profile web --dump-config   # 应看到两个包的层
 ```
 
-**方式 B：手动放置（免安装）**
+### 2. 安装 UI 包（来自 dsh-UI-web）
 
-1. 把 `dsh-workflow-registry`、`dsh-workflow-settings` 两个目录复制进
-   DSH 部署的 `node_modules/`（与 `@deepseek-ai` 平级）；
-2. 在 profile 的 `cordis.patch.yml` 中追加：
-
-```yaml
-- insert:
-    - id: workflow-registry
-      name: 'dsh-workflow-registry'
-    - id: ui-workflows
-      name: 'dsh-workflow-settings'
+```sh
+dsh plugin --profile web add ./dsh-workflow-settings ./dsh-workflow-run-panel
 ```
+
+（`dsh plugin` 转发给 pnpm；若 PATH 无 pnpm，先 `corepack enable pnpm`。）
 
 ### 3. 重启 Web UI
 
-重启 DSH Web 进程（例如 `npm exec @deepseek-ai/dsh web`）后：
-- 设置面板中出现「工作流」页，显示各工作目录的自动加载报告；
-- 用**任意预设**新建会话，打开含 `.dsh/workflows/` 的文件夹，发一条消息即可自动加载。
+```sh
+npm exec @deepseek-ai/dsh web
+```
+
+重启并刷新页面后：设置面板出现「工作流」页；右边缘出现「工作流运行」箭头面板。
 
 ## 工作流文件约定
 
 放在任意工作目录 `.dsh/workflows/`（兼容旧目录 `.dsh/plugins/`）下的 `.mjs` 文件：
 
 ```js
-export const name = '我的工作流'          // 显示名（工作流列表用）
-export const description = '一句话说明'     // 可选
-export const inject = ['tools']           // 可选，需要的服务名（缺失则跳过）
-export function apply(ctx) {              // 必需
-  ctx.tools.register({
-    name: 'my_tool',
-    description: '...',
-    parameters: { type: 'object', additionalProperties: false, properties: {} },
-    output: {
-      schema: { type: 'object', additionalProperties: true },
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
-    },
-    async execute(args) { return { ok: true } },
-  })
+export const name = '我的工作流'
+export const description = '一句话说明'
+export const inject = ['tools']
+export function apply(ctx) {
+  // 可选：ctx.workflowRuns.report({ stage, status, result }) 上报进度到右侧面板
+  ctx.tools.register({ /* ... */ })
 }
 ```
 
-## 设置页勾选开关
-
-设置 → 工作流 页里每个工作流带**启用勾选框**：
-
-- 取消勾选 → 立即卸载该工作流的工具（状态变"已禁用"，名单持久化到
-  `$DSH_HOME/storages/workflow-disabled.json`，重启后依然生效）；
-- 重新勾选 → 立即加载；
-- 「全部重新加载」→ 按当前勾选状态重载所有已报告目录。
-
 ## 斜杠命令
 
-输入框输入 `/` 弹出命令菜单（提示），选择 **mathmodel** 后接文件路径即可启动：
+输入 `/` 弹出命令菜单，选择 **mathmodel** 后接文件路径：
 
 ```
 /mathmodel 2025赛题C/C题.pdf      # 指定文件
 /mathmodel                        # 不接参数 = 当前工作目录
 ```
 
-命令执行后会先扫描当前目录工作流、返回六阶段流程指引；随后每个阶段用
-`mcm_stage_guide` 工具按阶段推进。
-
-> 命令名限定为小写英文（框架约束），中文说明会显示在命令菜单里。
+执行后创建一条「运行中」记录（右侧面板可见）；随后每个阶段用 `mcm_stage_guide` 推进，进度自动同步。
 
 ## 会话内管理工具
 
-加载器同时注册 `workflows` 工具：
-
-- 不传参：返回最近一次自动加载报告与已加载工作流列表（名称 + 说明 + 状态）
-- `action="reload"`：重新加载最近工作目录的全部工作流
-- `action="load"` + `dir`：加载指定目录下的工作流
+- `workflows`：查看/重载工作流加载状态
+- `workflow_run`：`list` 列出运行、`complete` 标记完成（带结果摘要）、`fail` 标记失败、`delete` 删除记录
 
 ## 安全提醒
 
 `.dsh/workflows/` 下的代码以当前会话的权限执行。只在自己信任的文件夹里放置工作流文件，不要打开来路不明的文件夹。
-
-## 工作流运行面板（右侧）
-
-页面右边缘有一个悬浮箭头，点击展开「工作流运行」面板：
-
-- **运行中**：显示当前正在跑的工作流与所在阶段（`mcm_stage_guide` 每次调用自动推进阶段）；
-- **已完成 / 失败**：显示历史记录，可点开查看结果、删除记录；
-- **完成弹窗**：一条运行从「运行中」变为「已完成」时，页面右上角弹提示，点击即可定位到该结果。
-
-配套 API（由 `dsh-workflow-registry` 提供）：
-
-- `GET  /api/workflow-runs` → `{ runs: [...] }`
-- `POST /api/workflow-runs` → `{ action: 'delete'|'start'|'progress'|'complete'|'fail', ... }`
-
-运行记录持久化到 `$DSH_HOME/storages/workflow-runs.json`。此外加载器注册了 `workflow_run` 工具：
-`list` 列出运行、`complete` 标记完成（带结果摘要）、`fail` 标记失败、`delete` 删除记录。
