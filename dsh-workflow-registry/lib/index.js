@@ -93,6 +93,9 @@ export default class WorkflowRegistry extends Service {
       startedAt: new Date().toISOString(),
       completedAt: null,
       result: null,
+      stages: Array.isArray(info.stages) ? info.stages : [],
+      log: [],
+      current: null,
     }
     this.runs.unshift(run)
     void this.persistRuns()
@@ -135,6 +138,13 @@ export default class WorkflowRegistry extends Service {
     }
     if (typeof payload.stage === 'number') run.stage = payload.stage
     if (typeof payload.target === 'string' && payload.target) run.target = payload.target
+    if (Array.isArray(payload.stages)) run.stages = payload.stages
+    if (typeof payload.message === 'string' && payload.message) {
+      run.current = payload.message
+      if (!Array.isArray(run.log)) run.log = []
+      run.log.push({ at: new Date().toISOString(), stage: typeof payload.stage === 'number' ? payload.stage : run.stage, message: payload.message })
+      if (run.log.length > 200) run.log.splice(0, run.log.length - 200)
+    }
     if (payload.status === 'completed' || payload.status === 'failed') {
       run.status = payload.status
       if (!run.completedAt) run.completedAt = new Date().toISOString()

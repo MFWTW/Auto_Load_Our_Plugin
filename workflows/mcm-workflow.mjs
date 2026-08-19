@@ -169,7 +169,15 @@ export function apply(ctx) {
     },
     async execute(args) {
       const n = args && typeof args.stage === 'number' ? args.stage : 0
+      // 六阶段路线图（含每阶段实时状态）：供右侧面板详情展示
+      const roadmap = (current, allDone = false) => stages.map((s) => ({
+        id: s.id,
+        title: s.title,
+        output: s.output,
+        status: allDone ? 'done' : (current <= 0 ? 'pending' : (s.id < current ? 'done' : (s.id === current ? 'active' : 'pending'))),
+      }))
       if (n === 0) {
+        runs?.report({ stage: 0, status: 'running', stages: roadmap(0), message: '工作流已就绪：六阶段路线图（审题→数据分析→选方法→建模求解→写作→自检打磨）' })
         return {
           mode: 'overview',
           flow: '审题 → 数据分析 → 选方法 → 建模求解 → 写作（DOCX→PDF，图表/流程图齐全）→ 自检打磨',
@@ -184,11 +192,12 @@ export function apply(ctx) {
         runs?.report({ status: 'failed', result: 'stage 必须为 0-6 的整数，收到：' + String(n) })
         return { error: 'stage 必须为 0-6 的整数，收到：' + String(n) }
       }
-      // 自动上报进度：运行中面板实时显示当前阶段；阶段 6 视为工作流完成
+      // 自动上报进度：写入路线图状态、当前动作与活动日志；阶段 6 视为工作流完成
+      const stageMsg = '阶段 ' + stage.id + '「' + stage.title + '」进行中 → 产出：' + stage.output
       if (n >= 6) {
-        runs?.report({ stage: n, status: 'completed', result: '阶段 ' + stage.title + ' 完成，产出：' + stage.output })
+        runs?.report({ stage: n, status: 'completed', stages: roadmap(n, true), message: stageMsg, result: '阶段 6「' + stage.title + '」完成，产出：' + stage.output })
       } else {
-        runs?.report({ stage: n, status: 'running' })
+        runs?.report({ stage: n, status: 'running', stages: roadmap(n), message: stageMsg })
       }
       return {
         mode: 'stage',
