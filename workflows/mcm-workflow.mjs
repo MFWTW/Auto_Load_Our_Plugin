@@ -123,6 +123,12 @@ const writingRequirements = [
 function formatGuide(value) {
   if (!value || typeof value !== 'object') return JSON.stringify(value)
   if (typeof value.error === 'string') return '⚠️ ' + value.error
+  if (value.mode === 'run') {
+    const lines = ['# 数学建模六阶段 · 自动执行模式', '']
+    if (value.target) lines.push('目标：' + value.target, '')
+    lines.push(value.guide ?? '')
+    return lines.join('\n')
+  }
   const lines = []
   if (value.mode === 'overview') {
     lines.push('# 数学建模六阶段流程总览', '', value.flow, '', '## 五大原则（每步都要过一遍）')
@@ -143,6 +149,7 @@ function formatGuide(value) {
     }
     lines.push('', '## 五大原则提醒')
     value.principles.forEach((pr, i) => { lines.push((i + 1) + '. ' + pr) })
+    if (value.autoRun) lines.push('', '## 🚀 执行指令', value.autoRun)
   } else {
     return JSON.stringify(value)
   }
@@ -153,6 +160,118 @@ function formatGuide(value) {
 export function apply(ctx) {
   // 运行上报桥（由工作流加载器注入）：阶段进度自动同步到右侧「工作流运行」面板
   const runs = ctx.workflowRuns ?? null
+
+  // 六阶段路线图（含每阶段实时状态）：供右侧面板详情展示，各工具共享
+  const roadmap = (current, allDone = false) => stages.map((s) => ({
+    id: s.id,
+    title: s.title,
+    output: s.output,
+    checks: s.checks,
+    status: allDone ? 'done' : (current <= 0 ? 'pending' : (s.id < current ? 'done' : (s.id === current ? 'active' : 'pending'))),
+  }))
+
+  // ========== 自动执行模式 ==========
+  // 目标：让 agent 拿到阶段清单后「不等待用户」，连续完成全部六阶段；
+  // 配合 goal 工具（create_goal/update_goal）设定完成目标，中断后自动续跑。
+  // 使用方式：执行 /mathmodel 后，或直接调用本工具。
+
+  /** 生成自动执行指令文本（返回给 agent，作为其行动命令）。 */
+  function autoRunGuide(stage, target) {
+    return [
+      '【自动执行模式】你已被授权连续执行数学建模六阶段流程，**不要停下来等待用户确认**。',
+      '',
+      '0. 立即调用 create_goal 设定本任务的完成目标：',
+      '   objective = 「在 ' + (target || '当前工作目录') + ' 完成数学建模六阶段（审题→数据分析→选方法→建模求解→写作DOCX→自检打磨），产出论文 DOCX 与 PDF 终稿」',
+      '   （若当前已有进行中的 goal，先 get_goal 查看，已存在同目标则跳过创建）',
+      '',
+      '1. 从阶段 ' + stage + ' 开始，逐阶段推进：',
+      '   a) 调用 mcm_stage_guide(stage=N) 获取该阶段检查清单与产出要求；',
+      '   b) 立即执行该阶段全部工作（读题/分析/建模/写作等），产出写入工作目录文件；',
+      '   c) 执行过程中随时用 mcm_note(stage=N, text=...) 上报进展（每阶段至少 2-3 条）；',
+      '   d) 该阶段完成后，**不等待用户**，立即调用 mcm_stage_guide(stage=N+1) 进入下一阶段。',
+      '',
+      '2. 若单回合内无法完成全部阶段：',
+      '   - 继续在本回合内连续调用工具推进，直到回合被迫结束；',
+      '   - 回合结束时在回复中明确写出「当前进度：阶段 X/Y 已完成，剩余 Z」，',
+      '     goal 系统会自动开启下一轮继续执行，你无需用户再次催促。',
+      '',
+      '3. 全部六阶段完成后：',
+      '   a) 调用 update_goal(goal_id, revision, action=complete) 关闭目标；',
+      '   b) 调用 workflow_run complete 附带结果摘要（各问方法+关键结果），关闭运行记录。',
+      '',
+      '4. 中断/重启后续跑：',
+      '   - 若会话中断后恢复，先 get_goal 查看目标状态（未完成则 update_goal resume 重新武装），',
+      '   - 再调用 mcm_run(stage=上次进度阶段) 从断点继续，无需重头开始。',
+    ].join('\n')
+  }
+
+  ctx.tools.register({
+    name: 'mcm_run',
+    description: '数学建模工作流「自动执行模式」启动器：开始连续执行六阶段（审题→数据分析→选方法→建模求解→写作→自检打磨），不等待用户逐段确认。返回完整的自动执行指令：先 create_goal 设定完成目标，再从指定阶段连续推进，每阶段用 mcm_note 上报进度，全部完成后 update_goal complete 并 workflow_run complete。中断后可用 stage 参数从断点续跑。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        stage: { type: 'number', description: '起始阶段 1-6（默认 1；中断续跑时传上次完成的下一个阶段）' },
+        target: { type: 'string', description: '目标文件或目录路径（默认当前工作目录）' },
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args, value) => [{ type: 'text', text: formatGuide(value) }],
+    },
+    async execute(args) {
+      const n = args && typeof args.stage === 'number' && args.stage >= 1 && args.stage <= 6 ? args.stage : 1
+      const target = typeof args?.target === 'string' && args.target ? args.target : ''
+      const guide = autoRunGuide(n, target)
+      runs?.report({
+        stage: n,
+        status: 'running',
+        stages: roadmap(n),
+        message: '自动执行模式启动：从阶段 ' + n + ' 开始连续推进（不等待用户）',
+      })
+      return { mode: 'run', stage: n, target, guide }
+    },
+  })
+
+  // 思考过程实时上报：agent 在阶段执行中随时调用，内容实时出现在面板该阶段的
+  // 「思考过程」区（thinking 字段；旧版 registry 未升级时降级进活动日志）。
+  ctx.tools.register({
+    name: 'mcm_note',
+    description: '数学建模工作流：向当前运行记录的指定阶段实时追加一条思考过程/进展（右侧「工作流运行」面板的阶段详情侧边栏可见）。在阶段执行过程中随时调用，让用户看到你的实时思考与进展。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        stage: { type: 'number', description: '阶段编号 1-6' },
+        text: { type: 'string', description: '思考过程/进展内容' },
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args, value) => [{ type: 'text', text: '✅ 已记录思考过程' }],
+    },
+    async execute(args) {
+      const stage = typeof args?.stage === 'number' ? args.stage : 1
+      const text = typeof args?.text === 'string' && args.text ? args.text : ''
+      if (!text) return { error: 'text 不能为空' }
+      runs?.report({
+        stage,
+        status: 'running',
+        stages: stages.map((s) => ({
+          id: s.id,
+          title: s.title,
+          output: s.output,
+          checks: s.checks,
+          status: s.id < stage ? 'done' : (s.id === stage ? 'active' : 'pending'),
+        })),
+        message: '阶段 ' + stage + '：' + text,
+        thinking: text,
+      })
+      return { ok: true }
+    },
+  })
+
   ctx.tools.register({
     name: 'mcm_stage_guide',
     description: '数学建模六阶段流程指引（审题→数据分析→选方法→建模求解→写作→自检打磨）。做数学建模类题目时按阶段调用：每阶段开始前调用一次，获取该阶段检查清单与产出要求；stage=0 或省略返回总览（五大原则、六阶段概览、写作硬性要求、参考资料策略）。写作阶段（stage=5）强制要求：论文写 DOCX 再转 PDF，并生成插入框图、算法流程图、数据图表与结果表格，可参考工作目录 1-1~3-2.pdf 七篇获奖论文。',
@@ -169,13 +288,6 @@ export function apply(ctx) {
     },
     async execute(args) {
       const n = args && typeof args.stage === 'number' ? args.stage : 0
-      // 六阶段路线图（含每阶段实时状态）：供右侧面板详情展示
-      const roadmap = (current, allDone = false) => stages.map((s) => ({
-        id: s.id,
-        title: s.title,
-        output: s.output,
-        status: allDone ? 'done' : (current <= 0 ? 'pending' : (s.id < current ? 'done' : (s.id === current ? 'active' : 'pending'))),
-      }))
       if (n === 0) {
         runs?.report({ stage: 0, status: 'running', stages: roadmap(0), message: '工作流已就绪：六阶段路线图（审题→数据分析→选方法→建模求解→写作→自检打磨）' })
         return {
@@ -205,6 +317,8 @@ export function apply(ctx) {
         title: stage.title,
         checks: stage.checks,
         output: stage.output,
+        // 自动执行指令：拿到清单后立即开工，不要停下来等用户；每阶段完成直接进下一阶段
+        autoRun: '【自动执行】拿到本清单后立即开始执行，不要停下来等待用户确认。执行中随时用 mcm_note(stage=' + stage.id + ', text=...) 上报进展；本阶段完成后，直接调用 mcm_stage_guide(stage=' + (stage.id + 1) + ') 进入下一阶段（' + (stage.id >= 6 ? '已到最后阶段，完成后按 mcm_run 的收尾步骤执行' : '若尚未调用过 mcm_run 且需要跨回合自动续跑，先调用 mcm_run 领取完整指令') + '）。',
         // paperRefs 仅阶段 5 存在；其余阶段含 undefined 值会触发
         // "value is not lossless JSON" 校验错误，须按存在性展开
         ...(stage.paperRefs ? { paperRefs: stage.paperRefs } : {}),

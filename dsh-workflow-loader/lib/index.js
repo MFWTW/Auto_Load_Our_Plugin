@@ -12,6 +12,7 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -234,6 +235,24 @@ export function apply(ctx, config) {
     scanSession(cwd)
   })
 
+  // 会话结束时自动收尾：把该会话启动的、仍处于 running 的运行记录标记为
+  // interrupted，避免右侧面板永远显示「运行中」（会话被关闭/删除时触发）。
+  // 之后若用户继续执行 /mathmodel 或调用 mcm_stage_guide，会重新激活或新建记录。
+  ctx.on('agent/disposed', ({ agent }) => {
+    const sessionId = agent?.session?.id ?? null
+    if (!sessionId) return
+    try {
+      for (const run of registry.listRuns()) {
+        if (run.status === 'running' && run.sessionId === sessionId) {
+          registry.updateRun(run.id, {
+            status: 'interrupted',
+            result: '会话结束，工作流未完成（自动中断；重新开始请再次执行 /mathmodel）',
+          })
+        }
+      }
+    } catch { /* 收尾失败不影响会话关闭 */ }
+  })
+
   // 设置页开关钩子：挂到注册表
   registry.attach({
     /** 设置页打开时按需扫描一个工作目录（幂等：已加载的不重复 import）。 */
@@ -301,14 +320,21 @@ export function apply(ctx, config) {
     name: 'workflow_run',
     description: [
       '工作流运行管理：查看/完成/删除「数学建模工作流」的运行记录（右侧工作流面板可见）。',
-      'action=list 列出全部运行（含 id、状态、阶段、结果）；',
+      'action=list 列出全部运行（含 id、状态、阶段、结果、思考过程）；',
+      'action=note 向一条运行记录的指定阶段追加一条思考过程（stage 阶段号 + text 思考内容，实时显示在面板的阶段详情里）；',
+      'action=start 手动启动一条运行记录（可选 name/target/workspace/stage）；',
       'action=complete 把一条运行标记为完成（可带 result 结果摘要，完成后页面右上角会弹窗）；',
       'action=fail 标记失败（error 为原因）；action=delete 删除运行记录。',
       'complete/fail/delete 未给 id 时作用于最近一条运行中的记录。',
     ].join('\n'),
     parameters: {
-      action: { type: 'string', description: 'list | complete | fail | delete（默认 list）' },
+      action: { type: 'string', description: 'list | note | start | complete | fail | delete（默认 list）' },
       id: { type: 'string', description: '运行 id（可选，缺省作用于最近一条 running）' },
+      stage: { type: 'number', description: 'note 时的阶段编号（1-6）' },
+      text: { type: 'string', description: 'note 时的思考过程文本' },
+      name: { type: 'string', description: 'start 时的运行名称' },
+      target: { type: 'string', description: 'start 时的目标路径' },
+      workspace: { type: 'string', description: 'start 时的工作目录' },
       result: { type: 'string', description: 'complete 时的结果摘要' },
       error: { type: 'string', description: 'fail 时的原因' },
     },
@@ -320,9 +346,23 @@ export function apply(ctx, config) {
       const action = args?.action ?? 'list'
       if (action === 'list') return { runs: registry.listRuns() }
       let id = typeof args?.id === 'string' && args.id ? args.id : null
-      if (!id && (action === 'complete' || action === 'fail' || action === 'delete')) {
+      if (!id && (action === 'note' || action === 'complete' || action === 'fail' || action === 'delete')) {
         const active = registry.activeRun('')
         id = active?.id ?? null
+      }
+      if (action === 'note') {
+        if (!id) return { error: '没有运行中的记录可记录思考过程' }
+        const run = registry.appendThinking(id, typeof args?.stage === 'number' ? args.stage : undefined, args?.text ?? '')
+        return run ? { ok: true, run } : { error: 'run 不存在' }
+      }
+      if (action === 'start') {
+        const run = registry.startRun({
+          name: typeof args?.name === 'string' && args.name ? args.name : '工作流',
+          target: typeof args?.target === 'string' ? args.target : '',
+          workspace: typeof args?.workspace === 'string' ? args.workspace : '',
+          stage: typeof args?.stage === 'number' ? args.stage : 1,
+        })
+        return { run }
       }
       if (action === 'complete') {
         if (!id) return { error: '没有运行中的记录可完成' }
@@ -359,8 +399,21 @@ export function apply(ctx, config) {
           await loadFrom(cwd)
         } catch { /* 扫描失败不阻塞命令 */ }
       }
-      // 建一条运行记录：右侧面板立即显示「运行中」
-      const run = registry.startRun({ workspace: cwd, name: '数学建模六阶段流程', target })
+      // 复用同目录已有 running 记录（重复执行 /mathmodel 不再堆积多条运行记录）；
+      // 仅新建时记录 sessionId，供会话结束时自动中断该记录
+      const sessionId = invocation.agent?.session?.id ?? null
+      let run = cwd ? registry.activeRun(cwd) : null
+      if (!run) {
+        run = registry.startRun({
+          workspace: cwd,
+          name: '数学建模六阶段流程',
+          target,
+          sessionId,
+        })
+      } else if (sessionId && run.sessionId !== sessionId) {
+        // 复用记录时把归属转移到当前会话，避免旧会话结束误中断正在使用的记录
+        registry.updateRun(run.id, { sessionId })
+      }
       // 立即写入六阶段路线图并把当前阶段置为 1，避免面板停留在「准备中」空转
       registry.reportRun(cwd, {
         stage: 1,
@@ -368,14 +421,31 @@ export function apply(ctx, config) {
         stages: mcmRoadmap(1),
         message: '阶段 1「审题」进行中 → 产出：问题清单（每问一句话概括本质 + 难点）',
       })
+      // 关键修复：命令结果只渲染为 UI 节点、绝不进入模型历史（dsh-commands 语义），
+      // 因此必须显式 followup 注入一条用户消息并唤醒模型回合，模型才会开始执行六阶段。
+      // 否则现象就是「输入指令后面板有记录但模型毫无反应」。
+      try {
+        const agent = invocation.agent
+        if (agent && typeof agent.followup === 'function') {
+          agent.followup(createUserMessage({
+            content: [{
+              type: 'text',
+              text: '数学建模工作流已启动（自动执行模式），目标：' + target + '。请立即调用 mcm_run 领取自动执行指令并开始连续执行：先 create_goal 设定完成目标，再按 mcm_run 的指令从阶段 1 逐阶段推进到阶段 6（每阶段用 mcm_note 上报进展，不等待用户确认），全部完成后 update_goal complete 并调用 workflow_run complete 记录结果。',
+            }],
+            source: { kind: 'user' },
+          }))
+        }
+      } catch (error) {
+        ctx.logger?.warn?.(`mathmodel: followup 唤醒模型失败：${String(error?.message ?? error)}`)
+      }
       return {
         kind: 'success',
         text: [
-          '数学建模工作流已启动：' + target,
+          '数学建模工作流已启动（自动执行模式）：' + target,
           '流程：审题 → 数据分析 → 选方法 → 建模求解 → 写作（DOCX→PDF）→ 自检打磨',
-          '请立即调用 mcm_stage_guide(stage=1) 进入第一阶段「审题」并开始执行；',
-          '之后每完成一个阶段、进入下一阶段前，先调用对应 stage 的 mcm_stage_guide 获取该阶段检查清单与产出要求；',
-          '右侧「工作流运行」面板可查看进度；全部完成后调用 workflow_run complete 记录结果。',
+          '请立即调用 mcm_run 领取自动执行指令（会先 create_goal 设定完成目标，再连续推进全部阶段，不等待用户）；',
+          '执行中每阶段用 mcm_note 上报进度；全部完成后 update_goal complete 并调用 workflow_run complete 记录结果。',
+          '若中断后恢复，get_goal 查看目标并用 mcm_run(stage=断点) 续跑。',
           '运行 ID：' + run.id,
         ].join('\n'),
       }

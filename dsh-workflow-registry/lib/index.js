@@ -66,7 +66,22 @@ export default class WorkflowRegistry extends Service {
       const target = await this.ctx.fs.resolve(runsPath())
       const text = await this.ctx.fs.readText(target)
       const list = JSON.parse(text)
-      if (Array.isArray(list)) this.runs = list.filter((x) => x && typeof x === 'object')
+      if (Array.isArray(list)) {
+        this.runs = list.filter((x) => x && typeof x === 'object')
+        // 服务重启后没有任何会话在真正执行工作流：把残留的 running 记录标记为
+        // interrupted，避免右侧面板永久显示「运行中」。后续 mcm_stage_guide /
+        // /mathmodel 上报时会重新激活（status 回到 running）或新建记录。
+        const stale = this.runs.filter((r) => r.status === 'running')
+        if (stale.length > 0) {
+          const at = new Date().toISOString()
+          for (const run of stale) {
+            run.status = 'interrupted'
+            run.result = '服务重启，运行记录自动中断；如需继续请重新启动工作流（/mathmodel 或 mcm_stage_guide）'
+            run.interruptedAt = at
+          }
+          void this.persistRuns()
+        }
+      }
     } catch {
       // 首次运行或读取失败：保持空数组
     }
@@ -95,9 +110,29 @@ export default class WorkflowRegistry extends Service {
       result: null,
       stages: Array.isArray(info.stages) ? info.stages : [],
       log: [],
+      // 按阶段组织的思考过程：{ "1": [{ at, text }], "2": [...] }
+      thinking: {},
       current: null,
+      // 启动该记录所属的会话 id（由 /mathmodel 写入；会话结束时据此自动中断记录）
+      sessionId: typeof info.sessionId === 'string' ? info.sessionId : null,
     }
     this.runs.unshift(run)
+    void this.persistRuns()
+    return run
+  }
+
+  /** 向一条运行记录的指定阶段追加一条思考过程（无记录则返回 null）。 */
+  appendThinking(id, stage, text) {
+    const run = this.runs.find((r) => r.id === id)
+    if (!run) return null
+    if (!run.thinking || typeof run.thinking !== 'object') run.thinking = {}
+    const key = String(typeof stage === 'number' ? stage : 0)
+    if (!Array.isArray(run.thinking[key])) run.thinking[key] = []
+    run.thinking[key].push({ at: new Date().toISOString(), text: String(text ?? '') })
+    // 同步进活动日志，保证旧面板也能看到
+    if (!Array.isArray(run.log)) run.log = []
+    run.log.push({ at: new Date().toISOString(), stage: typeof stage === 'number' ? stage : run.stage, message: '🧠 ' + String(text ?? '') })
+    if (run.log.length > 200) run.log.splice(0, run.log.length - 200)
     void this.persistRuns()
     return run
   }
@@ -144,6 +179,25 @@ export default class WorkflowRegistry extends Service {
       if (!Array.isArray(run.log)) run.log = []
       run.log.push({ at: new Date().toISOString(), stage: typeof payload.stage === 'number' ? payload.stage : run.stage, message: payload.message })
       if (run.log.length > 200) run.log.splice(0, run.log.length - 200)
+    }
+    // 思考过程上报：payload.thinking 可为单条文本或 { stage: [text,...] }
+    if (payload.thinking !== undefined) {
+      if (!run.thinking || typeof run.thinking !== 'object') run.thinking = {}
+      if (typeof payload.thinking === 'string') {
+        const key = String(typeof payload.stage === 'number' ? payload.stage : run.stage)
+        if (!Array.isArray(run.thinking[key])) run.thinking[key] = []
+        run.thinking[key].push({ at: new Date().toISOString(), text: payload.thinking })
+      } else if (payload.thinking && typeof payload.thinking === 'object' && !Array.isArray(payload.thinking)) {
+        for (const [key, entries] of Object.entries(payload.thinking)) {
+          if (!Array.isArray(entries)) continue
+          if (!Array.isArray(run.thinking[key])) run.thinking[key] = []
+          for (const entry of entries) {
+            const text = typeof entry === 'string' ? entry : (entry && typeof entry.text === 'string' ? entry.text : '')
+            if (!text) continue
+            run.thinking[key].push({ at: new Date().toISOString(), text })
+          }
+        }
+      }
     }
     if (payload.status === 'completed' || payload.status === 'failed') {
       run.status = payload.status
@@ -227,6 +281,13 @@ export default class WorkflowRegistry extends Service {
       case 'progress': {
         if (typeof payload.id !== 'string' || !payload.id) return { error: 'progress 需要 id' }
         const run = this.updateRun(payload.id, { status: 'running', stage: typeof payload.stage === 'number' ? payload.stage : undefined })
+        return run ? { ok: true, run } : { error: 'run 不存在' }
+      }
+      case 'note': {
+        if (typeof payload.id !== 'string' || !payload.id) return { error: 'note 需要 id' }
+        const stage = typeof payload.stage === 'number' ? payload.stage : undefined
+        if (typeof payload.text !== 'string' || !payload.text) return { error: 'note 需要 text' }
+        const run = this.appendThinking(payload.id, stage, payload.text)
         return run ? { ok: true, run } : { error: 'run 不存在' }
       }
       case 'complete': {
