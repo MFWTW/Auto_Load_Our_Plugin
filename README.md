@@ -120,3 +120,19 @@ export function apply(ctx) {              // 必需
 ## 安全提醒
 
 `.dsh/workflows/` 下的代码以当前会话的权限执行。只在自己信任的文件夹里放置工作流文件，不要打开来路不明的文件夹。
+
+## 工作流运行面板（右侧）
+
+页面右边缘有一个悬浮箭头，点击展开「工作流运行」面板：
+
+- **运行中**：显示当前正在跑的工作流与所在阶段（`mcm_stage_guide` 每次调用自动推进阶段）；
+- **已完成 / 失败**：显示历史记录，可点开查看结果、删除记录；
+- **完成弹窗**：一条运行从「运行中」变为「已完成」时，页面右上角弹提示，点击即可定位到该结果。
+
+配套 API（由 `dsh-workflow-registry` 提供）：
+
+- `GET  /api/workflow-runs` → `{ runs: [...] }`
+- `POST /api/workflow-runs` → `{ action: 'delete'|'start'|'progress'|'complete'|'fail', ... }`
+
+运行记录持久化到 `$DSH_HOME/storages/workflow-runs.json`。此外加载器注册了 `workflow_run` 工具：
+`list` 列出运行、`complete` 标记完成（带结果摘要）、`fail` 标记失败、`delete` 删除记录。

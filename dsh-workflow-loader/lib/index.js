@@ -50,7 +50,7 @@ function relParts(rel) {
 }
 
 /** 给工作流一个捕获 disposer 的子上下文：tools.register 的返回值被记录。 */
-function makeSubCtx(ctx, disposers) {
+function makeSubCtx(ctx, disposers, registry, workspace) {
   const tools = ctx.tools
   const wrapped = {
     register(definition) {
@@ -66,6 +66,19 @@ function makeSubCtx(ctx, disposers) {
   // 属性、不经过原型链，安全地遮蔽代理陷阱。
   Object.defineProperty(sub, 'tools', {
     value: wrapped,
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  })
+  // 工作流运行上报桥：工作流文件可用 ctx.workflowRuns.report(...) 汇报进度/完成，
+  // 右侧「工作流运行」面板据此显示运行中/已完成，并在完成时弹窗。
+  const workflowRuns = {
+    report: (payload = {}) => registry.reportRun(workspace, payload),
+    complete: (result) => registry.reportRun(workspace, { status: 'completed', result }),
+    fail: (error) => registry.reportRun(workspace, { status: 'failed', result: String(error ?? '失败') }),
+  }
+  Object.defineProperty(sub, 'workflowRuns', {
+    value: workflowRuns,
     writable: true,
     configurable: true,
     enumerable: true,
@@ -115,7 +128,7 @@ export function apply(ctx, config) {
           return rec
         }
       }
-      await plugin.apply(makeSubCtx(ctx, rec.disposers))
+      await plugin.apply(makeSubCtx(ctx, rec.disposers, registry, workspace))
       rec.name = typeof plugin.name === 'string' && plugin.name ? plugin.name : name
       rec.description = typeof plugin.description === 'string' ? plugin.description : ''
       records.set(filePath, rec)
@@ -255,6 +268,52 @@ export function apply(ctx, config) {
     },
   }))
 
+  // 工作流运行管理工具：模型用它显式完成/失败/删除运行记录（进度由工作流文件自动上报）
+  ctx.tools.register(defineTool({
+    name: 'workflow_run',
+    description: [
+      '工作流运行管理：查看/完成/删除「数学建模工作流」的运行记录（右侧工作流面板可见）。',
+      'action=list 列出全部运行（含 id、状态、阶段、结果）；',
+      'action=complete 把一条运行标记为完成（可带 result 结果摘要，完成后页面右上角会弹窗）；',
+      'action=fail 标记失败（error 为原因）；action=delete 删除运行记录。',
+      'complete/fail/delete 未给 id 时作用于最近一条运行中的记录。',
+    ].join('\n'),
+    parameters: {
+      action: { type: 'string', description: 'list | complete | fail | delete（默认 list）' },
+      id: { type: 'string', description: '运行 id（可选，缺省作用于最近一条 running）' },
+      result: { type: 'string', description: 'complete 时的结果摘要' },
+      error: { type: 'string', description: 'fail 时的原因' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args) {
+      const action = args?.action ?? 'list'
+      if (action === 'list') return { runs: registry.listRuns() }
+      let id = typeof args?.id === 'string' && args.id ? args.id : null
+      if (!id && (action === 'complete' || action === 'fail' || action === 'delete')) {
+        const active = registry.activeRun('')
+        id = active?.id ?? null
+      }
+      if (action === 'complete') {
+        if (!id) return { error: '没有运行中的记录可完成' }
+        const run = registry.updateRun(id, { status: 'completed', result: typeof args?.result === 'string' && args.result ? args.result : '已完成' })
+        return run ? { ok: true, run } : { error: 'run 不存在' }
+      }
+      if (action === 'fail') {
+        if (!id) return { error: '没有运行中的记录可标记失败' }
+        const run = registry.updateRun(id, { status: 'failed', result: typeof args?.error === 'string' && args.error ? args.error : '失败' })
+        return run ? { ok: true, run } : { error: 'run 不存在' }
+      }
+      if (action === 'delete') {
+        if (!id) return { error: '需要 id（或存在运行中的记录）' }
+        return { ok: registry.deleteRun(id) }
+      }
+      return { error: 'unknown action: ' + String(action) }
+    },
+  }))
+
   // 斜杠命令：输入框输入 / 弹出命令菜单，选择 mathmodel（数学建模）后跟文件路径即可
   ctx.commands.register({
     name: 'mathmodel',
@@ -270,13 +329,16 @@ export function apply(ctx, config) {
           await loadFrom(cwd)
         } catch { /* 扫描失败不阻塞命令 */ }
       }
+      // 建一条运行记录：右侧面板立即显示「运行中」
+      const run = registry.startRun({ workspace: cwd, name: '数学建模六阶段流程', target })
       return {
         kind: 'success',
         text: [
           '数学建模工作流已启动：' + target,
           '流程：审题 → 数据分析 → 选方法 → 建模求解 → 写作 → 自检打磨',
           '每个阶段开始前调用 mcm_stage_guide 工具获取检查清单与产出要求；',
-          '用 workflows 工具可查看工作流加载状态。',
+          '右侧「工作流运行」面板可查看进度；完成后调用 workflow_run complete 记录结果。',
+          '运行 ID：' + run.id,
         ].join('\n'),
       }
     },
